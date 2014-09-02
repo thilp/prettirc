@@ -1,12 +1,6 @@
 use v6;
 
-my %PSEUDOS;
-
-class Pseudo {
-    has Str $.text;
-    has Str $.color = '#' ~ ((0..0xCC).pick xx 3).fmt('%02x', '');
-    submethod BUILD(Str :$!text!) { %PSEUDOS{$!text} = self }
-}
+# PARSING ###################################################################
 
 my $linenum = 1;
 class IrcLine {
@@ -15,7 +9,7 @@ class IrcLine {
 }
 
 class IrcMessage is IrcLine {
-    has Pseudo $.speaker;
+    has Str $.speaker;
     has Str $.message;
 }
 
@@ -53,7 +47,7 @@ class IrcLine::Actions {
     method message($/) {
         make IrcMessage.new(
             timestamp => $<timestamp>.made,
-            speaker   => $<pseudo>.made,
+            speaker   => ~$<pseudo>,
             message   => ~$<blah>,
         );
     }
@@ -73,15 +67,112 @@ class IrcLine::Actions {
         );
     }
 
-    method pseudo($/) {
-        make %PSEUDOS{~$/} :exists ?? %PSEUDOS{~$/} !! Pseudo.new(:text(~$/))
+}
+
+# HTML ######################################################################
+
+role Formatter {
+    method format(IrcLine @lines --> Str) {...}
+}
+
+my %PSEUDOS;
+
+my @COLORS := gather loop {
+    my Int @rgb = (0..0xFF).pick xx 3;
+    my $level = [+] @rgb;
+    take '#' ~ @rgb.fmt('%02x', '') if 50 < $level < 500;
+};
+
+class Pseudo {
+    has Str $.text;
+
+    has Str $.color = shift @COLORS;
+
+    submethod BUILD(Str :$!text!) { %PSEUDOS{$!text} = self }
+    method new(Str $text) {
+        %PSEUDOS{$text} :exists ?? %PSEUDOS{$text} !! self.bless(:$text)
+    }
+}
+
+class HtmlFormatter does Formatter {
+
+    sub html-entities-encode(Str $str --> Str) {
+        $str.trans:
+            /'&'/ => '&amp;',
+            /'<'/ => '&lt;', /'>'/ => '&gt;',
     }
 
+    method format(IrcLine @lines --> Str) {
+        my $strlines = [~] do for @lines {
+            my $n = .number;
+            my $t = qq{<a id="l$n" href="#l$n" class="date">}
+                  ~ format-timestamp(.timestamp)
+                  ~ '</a>';
+            {
+                when IrcEvent { $t ~= ' ' ~ format-descr(.descr) }
+                when IrcMessage {
+                    $t ~= ' ' ~ format-pseudo(.speaker)
+                        ~ ' ' ~ format-message(.message)
+                }
+                default { die "Unknown IrcLine subclass: " ~ .WHAT }
+            }
+            $t ~ "<br>\n"
+        }
+        q:to[STDSTYLE] ~ qc:to[END]
+        <!DOCTYPE html>
+        <head>
+            <meta charset="utf-8">
+        </head>
+        <body>
+            <section style="font-family: monospace">
+                <style scoped type="text/css">
+                    .date { color: #bbbbbb; text-decoration: none; }
+                    .date:hover { color: #555555 }
+                    .event { font-style: italic; font-size: 90% }
+                    .event:not(:hover) { color: #bbbbbb }
+        STDSTYLE
+                    {
+                        [~] do for %PSEUDOS.kv {
+                            my $color = $^b.color;
+                            q:s[.p_$^a { font-weight: bold; color: $color } ]
+                        }
+                    }
+                </style>
+                {$strlines}
+            </section>
+        </body>
+        END
+    }
+
+    sub format-timestamp(DateTime $dt --> Str) {
+        '[' ~ $dt.Date
+            ~ ' ' ~ join(':', ($dt.hour, $dt.minute, $dt.second)».fmt('%02d'))
+            ~ ']'
+    }
+
+    sub format-pseudo(Str $str --> Str) {
+        my $pseudo = Pseudo.new( html-entities-encode($str) );
+        '<span class="p_' ~ $pseudo.text ~ '">&lt;' ~ $pseudo.text ~ '&gt;</span>'
+    }
+
+    sub format-message(Str $str is copy --> Str) {
+        $str ~~ s:g{ « https? '://' <[\w./#:-]>+ } = qq|<a href="{~$/}">{~$/}</a>|;
+        $str
+    }
+
+    sub format-descr(Str $str is copy --> Str) {
+        # Anonymize IPv4
+        $str ~~ s:g{ « [\d ** 1..3] ** 4 % '.' » } = 'i.p.v.4';
+
+        '<span class="event">' ~ $str ~ '</span>'
+    }
 }
+
+# MAIN ######################################################################
 
 sub MAIN(Str $path?) {
     my $fh = $path.defined ?? open $path !! $*IN;
-    my @lines;
+    my IrcLine @lines;
 
     my $actions = IrcLine::Actions.new;
     for $fh.lines -> $line {
@@ -90,5 +181,5 @@ sub MAIN(Str $path?) {
         push @lines, $m.made;
     }
 
-    for @lines { .gist.say }
+    say HtmlFormatter.new.format: @lines
 }
