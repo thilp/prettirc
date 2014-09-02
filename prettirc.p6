@@ -156,14 +156,15 @@ class HtmlFormatter does Formatter {
     }
 
     sub format-message(Str $str is copy --> Str) {
+        $str = html-entities-encode($str);
         $str ~~ s:g{ « https? '://' <[\w./#:-]>+ } = qq|<a href="{~$/}">{~$/}</a>|;
         $str
     }
 
     sub format-descr(Str $str is copy --> Str) {
-        # Anonymize IPv4
+        $str = html-entities-encode($str);
+        # Anonymize IPv4s
         $str ~~ s:g{ « [\d ** 1..3] ** 4 % '.' » } = 'i.p.v.4';
-
         '<span class="event">' ~ $str ~ '</span>'
     }
 }
